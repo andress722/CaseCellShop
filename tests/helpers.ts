@@ -65,6 +65,10 @@ export async function cleanupTestData(
 ) {
   const pattern = `${prefix}%`;
   await database.query(
+    "DELETE FROM dlq_resolutions WHERE order_id IN (SELECT id FROM orders WHERE idempotency_key LIKE $1)",
+    [pattern],
+  );
+  await database.query(
     "DELETE FROM erp_invoices WHERE order_id IN (SELECT id FROM orders WHERE idempotency_key LIKE $1)",
     [pattern],
   );

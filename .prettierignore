@@ -2,5 +2,5 @@ node_modules
 dist
 coverage
 package-lock.json
-AGENTS_CASECELLSHOP.md
+AGENTS.md
 *.pdf

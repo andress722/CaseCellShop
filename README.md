@@ -68,9 +68,13 @@ O fake ERP usa tabelas locais para simular catálogo e faturamento. Isto mantém
 
 O worker marca `COMPLETED` após confirmação. Erro conhecido marca `FAILED` e libera a reserva. Timeout esgotado marca `RECONCILIATION_REQUIRED` e envia à DLQ; a reconciliação consulta o fake ERP. Pedidos `PROCESSING` envelhecidos são reconciliados. Na simulação, ausência de fatura na consulta é resposta definitiva; em um ERP real esta decisão exigiria contrato explícito de consulta.
 
+Após confirmar o estado terminal, a reconciliação registra a resolução em `dlq_resolutions` e remove o job da DLQ; `dlq_depth` passa a refletir apenas pendências, e `dlq_messages_total` permanece como contador histórico.
+
 ## Verificação e cenários de falha
 
 `npm test` cobre cache (miss, hit, TTL, stale, indisponibilidade e stampede), API, idempotência, rollback, overselling, outbox, redelivery, timeout, DLQ e reconciliação. Para repetir o teste de concorrência: `npm run test:concurrency`. `npm run build`, `npm run typecheck` e `npm run lint` completam a verificação local. `npm run reconcile` executa uma passagem manual.
+
+O [CI](.github/workflows/ci.yml) executa migração, seed, testes, typecheck, lint e build em push e pull request para `main`, com PostgreSQL e Redis locais via Docker Compose.
 
 O fake ERP aceita `ERP_CATALOG_MODE=normal|slow|error` e `ERP_BILLING_MODE=normal|slow|timeout|error|accept_then_timeout`. São parâmetros de execução/teste, não headers públicos. Redis indisponível afeta cache e fila: o catálogo tenta a fonte e a outbox fica pendente para republicação. PostgreSQL indisponível torna readiness `503` e impede novos checkouts, preservando a autoridade transacional.
 

@@ -87,6 +87,17 @@ export class OrderProcessor {
                 { jobId: `dlq-${orderId}`, removeOnComplete: false },
               );
               this.metrics.dlqMessages.inc();
+              try {
+                const depth = await this.dlq.getJobCounts("waiting", "failed");
+                this.metrics.dlqDepth.set(
+                  (depth.waiting ?? 0) + (depth.failed ?? 0),
+                );
+              } catch (metricsError) {
+                this.logger.warn(
+                  { event: "queue.metrics.failed", err: metricsError },
+                  "DLQ depth refresh failed",
+                );
+              }
               this.logger.error(
                 {
                   event: "order.sent_to_dlq",

@@ -191,6 +191,8 @@ describe("outbox, worker and reconciliation", () => {
     await expect(
       processor.process(fakeJob(order.orderId, 1)),
     ).rejects.toThrow();
+    expect(await dlq.getJob(`dlq-${order.orderId}`)).toBeTruthy();
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(1);
     const reconciler = new Reconciler(
       ctx.database,
       erp,
@@ -210,6 +212,24 @@ describe("outbox, worker and reconciliation", () => {
     );
     expect(invoice.rowCount).toBe(1);
     expect(status.rows[0]?.status).toBe("COMPLETED");
+    expect(await dlq.getJob(`dlq-${order.orderId}`)).toBeUndefined();
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(0);
+    const resolutions = await ctx.database.query<{
+      reason: string;
+      resolved_status: string;
+    }>(
+      "SELECT reason, resolved_status FROM dlq_resolutions WHERE order_id = $1",
+      [order.orderId],
+    );
+    expect(resolutions.rows).toEqual([
+      { reason: "ERP_TIMEOUT", resolved_status: "COMPLETED" },
+    ]);
+    await reconciler.runOnce();
+    const repeated = await ctx.database.query(
+      "SELECT job_id FROM dlq_resolutions WHERE order_id = $1",
+      [order.orderId],
+    );
+    expect(repeated.rowCount).toBe(1);
   });
 
   it("sends permanent failures to DLQ and releases reserved stock", async () => {
@@ -233,6 +253,34 @@ describe("outbox, worker and reconciliation", () => {
     );
     expect(status.rows[0]?.status).toBe("FAILED");
     expect(await dlq.getJob(`dlq-${order.orderId}`)).toBeTruthy();
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(1);
+    const reconciler = new Reconciler(
+      ctx.database,
+      erp,
+      processor,
+      dlq,
+      ctx.metrics,
+      ctx.app.log,
+    );
+    await reconciler.runOnce();
+    expect(await dlq.getJob(`dlq-${order.orderId}`)).toBeUndefined();
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(0);
+    const resolutions = await ctx.database.query<{
+      reason: string;
+      resolved_status: string;
+    }>(
+      "SELECT reason, resolved_status FROM dlq_resolutions WHERE order_id = $1",
+      [order.orderId],
+    );
+    expect(resolutions.rows).toEqual([
+      { reason: "ERP_REJECTED", resolved_status: "FAILED" },
+    ]);
+    await reconciler.runOnce();
+    const repeated = await ctx.database.query(
+      "SELECT job_id FROM dlq_resolutions WHERE order_id = $1",
+      [order.orderId],
+    );
+    expect(repeated.rowCount).toBe(1);
   });
 
   it("reconciles an ambiguous timeout with a definitive ERP lookup", async () => {
@@ -257,6 +305,7 @@ describe("outbox, worker and reconciliation", () => {
       [order.orderId],
     );
     expect(uncertain.rows[0]?.status).toBe("RECONCILIATION_REQUIRED");
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(1);
     const reconciler = new Reconciler(
       ctx.database,
       erp,
@@ -271,6 +320,8 @@ describe("outbox, worker and reconciliation", () => {
       [order.orderId],
     );
     expect(resolved.rows[0]?.status).toBe("FAILED");
+    expect(await dlq.getJob(`dlq-${order.orderId}`)).toBeUndefined();
+    expect((await ctx.metrics.dlqDepth.get()).values[0]?.value).toBe(0);
   });
 
   it("reconciles a stale processing order", async () => {

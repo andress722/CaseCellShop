@@ -44,27 +44,59 @@ export class Reconciler {
             "SELECT status FROM orders WHERE id = $1",
             [orderId],
           );
-          if (
-            !status.rows[0] ||
-            ["COMPLETED", "FAILED"].includes(status.rows[0].status)
-          )
-            continue;
-          const reference = await this.erp.lookupInvoice(orderId);
-          if (reference) {
-            await this.processor.complete(orderId, reference);
-            this.metrics.reconciliation.inc({ result: "completed" });
-          } else {
-            await this.processor.fail(orderId, "ERP_NOT_PROCESSED");
-            this.metrics.reconciliation.inc({ result: "failed" });
+          if (!status.rows[0]) throw new Error(`Order ${orderId} not found`);
+          let resolvedStatus = status.rows[0].status;
+          if (resolvedStatus !== "COMPLETED" && resolvedStatus !== "FAILED") {
+            const reference = await this.erp.lookupInvoice(orderId);
+            if (reference) {
+              await this.processor.complete(orderId, reference);
+            } else {
+              await this.processor.fail(orderId, "ERP_NOT_PROCESSED");
+            }
+            const final = await this.database.query<{ status: string }>(
+              "SELECT status FROM orders WHERE id = $1",
+              [orderId],
+            );
+            resolvedStatus = final.rows[0]?.status ?? "";
+            if (resolvedStatus !== "COMPLETED" && resolvedStatus !== "FAILED") {
+              throw new Error(
+                `Order ${orderId} did not reach a terminal state`,
+              );
+            }
+            this.metrics.reconciliation.inc({
+              result: resolvedStatus === "COMPLETED" ? "completed" : "failed",
+            });
+            this.logger.info(
+              {
+                event: "reconciliation.completed",
+                orderId,
+                result: resolvedStatus,
+              },
+              "Order reconciled",
+            );
           }
-          this.logger.info(
-            {
-              event: "reconciliation.completed",
-              orderId,
-              result: reference ? "completed" : "failed",
-            },
-            "Order reconciled",
-          );
+          for (const job of deadJobs.filter(
+            (candidate) => candidate.data.orderId === orderId,
+          )) {
+            if (!job.id) throw new Error(`DLQ job for ${orderId} has no ID`);
+            const reason =
+              typeof job.data.reason === "string" ? job.data.reason : "UNKNOWN";
+            await this.database.query(
+              `INSERT INTO dlq_resolutions (job_id, order_id, reason, resolved_status)
+               VALUES ($1, $2, $3, $4) ON CONFLICT (job_id) DO NOTHING`,
+              [job.id, orderId, reason, resolvedStatus],
+            );
+            await job.remove();
+            this.logger.info(
+              {
+                event: "reconciliation.dlq_cleared",
+                orderId,
+                jobId: job.id,
+                result: resolvedStatus,
+              },
+              "Resolved DLQ job removed after durable audit",
+            );
+          }
         } catch (error) {
           this.metrics.reconciliation.inc({ result: "inconclusive" });
           this.logger.warn(
@@ -72,6 +104,15 @@ export class Reconciler {
             "Order remains uncertain",
           );
         }
+      }
+      try {
+        const depth = await this.dlq.getJobCounts("waiting", "failed");
+        this.metrics.dlqDepth.set((depth.waiting ?? 0) + (depth.failed ?? 0));
+      } catch (error) {
+        this.logger.warn(
+          { event: "queue.metrics.failed", err: error },
+          "DLQ depth refresh failed",
+        );
       }
       return ids.size;
     });

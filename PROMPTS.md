@@ -28,7 +28,7 @@ Cobrir riscos de concorrência e reprocessamento definidos na especificação.
 
 ### Prompt
 
-Trechos de `AGENTS_CASECELLSHOP.md` sobre overselling, idempotência, outbox, accept-then-timeout e cache stampede.
+Trechos do documento hoje em `AGENTS.md` sobre overselling, idempotência, outbox, accept-then-timeout e cache stampede.
 
 ### Saída aproveitada
 
